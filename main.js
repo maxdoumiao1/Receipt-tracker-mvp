@@ -74,30 +74,34 @@ input.addEventListener('change', async (e) => {
 });
 
 // --- 行解析（MVP 规则：够用就好） ---
+// --- 行解析（优化版） ---
 function parseReceiptText(text) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  const EXCLUDE = /(subtotal|total|tax|change|balance|visa|mastercard|debit|credit|cash|tender|coupon|savings|refund)/i;
-
-  // 价格在行尾：  任意名称 ……  12.99 或 $12.99
+  // 增加排除规则，过滤掉更多的非商品行
+  const EXCLUDE = /(subtotal|total|tax|change|balance|visa|mastercard|debit|credit|cash|tender|coupon|savings|refund|transaction|invoice|auth|member|acct|visa|master|card|payment|network|receipt|visit|fuel|items|description|amount)/i;
+  
+  // 价格在行尾：任意名称 …… 12.99 或 $12.99
   const END_PRICE = /^(.*?)[\s$]*([\$]?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*$/;
 
-  // "x2 @ 3.49" / "2 x 3.49" 等数量单价模式（可选）
+  // 数量单价模式，如 "x2 @ 3.49" 或 "2 x 3.49"
   const QTY_AT_PRICE = /^(.*?)(?:x|\*)\s?(\d+)\s*@\s*\$?(\d+(?:\.\d{2})?)\b.*$/i;
 
   // 规格抽取（示例：16 oz / 1 lb / 2L / 6ct / 12pk）
   const UNIT = /(\d+(?:\.\d+)?)\s*(oz|lb|g|kg|ml|l|gal|ct|pk)\b/i;
 
-  const today = new Date().toISOString().slice(0,10);
+  const today = new Date().toISOString().slice(0, 10);
   const results = [];
 
   for (const raw of lines) {
     const line = raw.replace(/\s{2,}/g, ' ').trim();
-    if (!line || EXCLUDE.test(line)) continue;
-
+    
+    // 过滤无用行和短行
+    if (!line || line.length < 5 || EXCLUDE.test(line)) continue;
+    
     let name = '', priceTotal = null, qtyValue = null, qtyUnit = null;
-
-    // 先匹配 qty@price 模式（如 "Banana x2 @ 0.49"）
+    
+    // 尝试匹配 "qty @ price" 模式
     const qa = line.match(QTY_AT_PRICE);
     if (qa) {
       name = qa[1].trim();
@@ -107,32 +111,32 @@ function parseReceiptText(text) {
         priceTotal = +(count * each).toFixed(2);
       }
     }
-
-    // 否则用“行尾价格”规则
+    
+    // 如果没有匹配到，则用“行尾价格”规则
     if (priceTotal === null) {
       const m = line.match(END_PRICE);
       if (!m) continue;
       name = (m[1] || '').trim();
       const priceStr = (m[2] || '').replace(/[^0-9.]/g, '');
       priceTotal = parseFloat(priceStr);
-      if (!name || isNaN(priceTotal)) continue;
+      if (!name || isNaN(priceTotal) || priceTotal === 0) continue;
     }
-
-    // 抽规格（用于单位价）
+    
+    // 抽取规格
     const u = line.match(UNIT);
     if (u) {
       qtyValue = parseFloat(u[1]);
-      qtyUnit  = u[2].toLowerCase();
+      qtyUnit = u[2].toLowerCase();
     }
-
-    // 计算单位价（按“基准单位”统一）
+    
+    // 计算单位价
     const unitPrice = computeUnitPrice(priceTotal, qtyValue, qtyUnit);
 
     results.push({
       name: normalizeName(name),
       priceTotal,
       qtyValue: qtyValue ?? null,
-      qtyUnit:  qtyUnit ?? null,
+      qtyUnit: qtyUnit ?? null,
       unitPrice,
       date: today
     });
@@ -160,10 +164,12 @@ function computeUnitPrice(total, qty, unit) {
 }
 
 function normalizeName(s) {
+  // 去除常见的单位和标识符，如 ea, pk, ct
   return s
-    .replace(/\b(?:ea|pk|ct)\b/ig,'')
-    .replace(/\s{2,}/g,' ')
-    .replace(/[^\w\s%-]/g,'')
+    .replace(/\b(?:ea|pk|ct)\b/ig, '')
+    // 移除不必要的符号和多余空格
+    .replace(/[^\w\s\d.-]/g, '')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
