@@ -1,1 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Receipt Tracker MVP</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="style.css" />
+  <meta name="theme-color" content="#ffffff" />
+</head>
+<body>
+  <header>
+    <h1>Receipt Tracker (MVP)</h1>
+    <p>Upload or snap a receipt → OCR → parse lines → unit price & trends</p>
+  </header>
+
+  <section id="uploader">
+    <h2>1) Upload / Snap</h2>
+    <input id="receipt-upload" type="file" accept="image/*" capture="environment" />
+    <p id="status">Pick a receipt image…</p>
+    <progress id="progress" value="0" max="1" style="width:100%; display:none;"></progress>
+  </section>
+
+  <section id="results">
+    <h2>2) OCR Lines (quick preview)</h2>
+    <div id="ocr-raw" class="box"></div>
+    <h3>Parsed Items</h3>
+    <table id="parsed-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>Total $</th><th>Qty</th><th>Unit</th><th>$ / unit</th><th>Date</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="viz">
+    <h2>3) Trends</h2>
+    <label>Select item: 
+      <select id="item-select"></select>
+    </label>
+    <canvas id="price-chart" height="240"></canvas>
+  </section>
+
+  <!-- CDNs -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="main.js"></script>
+</body>
+</html>
 
