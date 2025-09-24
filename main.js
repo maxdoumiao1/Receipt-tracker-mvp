@@ -75,19 +75,20 @@ input.addEventListener('change', async (e) => {
 
 // --- 行解析（MVP 规则：够用就好） ---
 // --- 行解析（优化版） ---
+// --- 行解析（增强版） ---
 function parseReceiptText(text) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  // 增加排除规则，过滤掉更多的非商品行
-  const EXCLUDE = /(subtotal|total|tax|change|balance|visa|mastercard|debit|credit|cash|tender|coupon|savings|refund|transaction|invoice|auth|member|acct|visa|master|card|payment|network|receipt|visit|fuel|items|description|amount)/i;
-  
+  // 增加更严格的排除规则，过滤更多无用行
+  const EXCLUDE = /(subtotal|total|tax|change|balance|visa|mastercard|debit|credit|cash|tender|coupon|savings|refund|invoice|member|acct|payment|network|approved|receipts|available|website|visit|search|fuel|customer|phone|no\scum|mode)/i;
+
   // 价格在行尾：任意名称 …… 12.99 或 $12.99
   const END_PRICE = /^(.*?)[\s$]*([\$]?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*$/;
 
   // 数量单价模式，如 "x2 @ 3.49" 或 "2 x 3.49"
-  const QTY_AT_PRICE = /^(.*?)(?:x|\*)\s?(\d+)\s*@\s*\$?(\d+(?:\.\d{2})?)\b.*$/i;
+  const QTY_AT_PRICE = /^(.*?)(?:x|\*)\s?(\d+(?:\.\d{2})?)\s*@\s*\$?(\d+(?:\.\d{2})?)\b.*$/i;
 
-  // 规格抽取（示例：16 oz / 1 lb / 2L / 6ct / 12pk）
+  // 规格抽取
   const UNIT = /(\d+(?:\.\d+)?)\s*(oz|lb|g|kg|ml|l|gal|ct|pk)\b/i;
 
   const today = new Date().toISOString().slice(0, 10);
@@ -95,10 +96,12 @@ function parseReceiptText(text) {
 
   for (const raw of lines) {
     const line = raw.replace(/\s{2,}/g, ' ').trim();
-    
-    // 过滤无用行和短行
+
+    // 过滤规则：
+    // 1. 如果行太短，直接跳过
+    // 2. 如果包含排除关键词，直接跳过
     if (!line || line.length < 5 || EXCLUDE.test(line)) continue;
-    
+
     let name = '', priceTotal = null, qtyValue = null, qtyUnit = null;
     
     // 尝试匹配 "qty @ price" 模式
@@ -107,11 +110,11 @@ function parseReceiptText(text) {
       name = qa[1].trim();
       const count = parseFloat(qa[2]);
       const each = parseFloat(qa[3]);
-      if (!isNaN(count) && !isNaN(each)) {
+      if (!isNaN(count) && !isNaN(each) && each > 0) {
         priceTotal = +(count * each).toFixed(2);
       }
     }
-    
+
     // 如果没有匹配到，则用“行尾价格”规则
     if (priceTotal === null) {
       const m = line.match(END_PRICE);
@@ -120,8 +123,11 @@ function parseReceiptText(text) {
       const priceStr = (m[2] || '').replace(/[^0-9.]/g, '');
       priceTotal = parseFloat(priceStr);
       if (!name || isNaN(priceTotal) || priceTotal === 0) continue;
+      
+      // 增加过滤：如果价格太高或太低（不像是商品价），也过滤掉
+      if (priceTotal > 5000 || priceTotal < 0.01) continue;
     }
-    
+
     // 抽取规格
     const u = line.match(UNIT);
     if (u) {
@@ -129,7 +135,9 @@ function parseReceiptText(text) {
       qtyUnit = u[2].toLowerCase();
     }
     
-    // 计算单位价
+    // 再次过滤：如果名字太短，且不是单价模式，很可能是噪音
+    if (name.length < 3 && !qa) continue;
+
     const unitPrice = computeUnitPrice(priceTotal, qtyValue, qtyUnit);
 
     results.push({
