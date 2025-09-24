@@ -1,1 +1,10 @@
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0 auto; max-width: 880px; padding: 20px; }
+header { margin-bottom: 16px; }
+section { margin: 20px 0; padding: 16px; border: 1px solid #eee; border-radius: 12px; background: #fafafa; }
+.box { white-space: pre-wrap; background:#fff; border:1px dashed #ddd; padding:10px; min-height: 80px; }
+table { width:100%; border-collapse: collapse; }
+th, td { border-bottom:1px solid #eee; padding:8px; text-align:left; font-size: 14px; }
+label { display: inline-block; margin: 8px 0; }
+h2, h3 { margin: 8px 0 12px; }
 
