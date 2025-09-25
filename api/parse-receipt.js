@@ -42,53 +42,116 @@ function extractDateISO(text) {
 }
 
 // ——成本科油票专用解析（高优先）——
+// —— 从 OCR 文本中提日期（优先 “Date: 09/10/25”）——
+function extractDateISO(text) {
+  const m = text.match(/date[:\s]*([0-9]{2})[\/\-]([0-9]{2})[\/\-]([0-9]{2,4})/i)
+        || text.match(/\b([0-9]{2})[\/\-]([0-9]{2})[\/\-]([0-9]{2,4})\b/);
+  if (!m) return new Date().toISOString().slice(0,10);
+  const mm = m[1], dd = m[2], yy = m[3].length === 2 ? ('20' + m[3]) : m[3];
+  return `${yy}-${mm}-${dd}`;
+}
+
+// —— 把数字里常见的 OCR 混淆字符纠正 ——
+// 只用于“金额/数量”提取，不全局替换
+function fixNumericGlyphs(s) {
+  return s
+    .replace(/[Oo]/g, '0')
+    .replace(/[Il]/g, '1')
+    .replace(/[Ss]/g, '5')
+    .replace(/[Uu]/g, '4');
+}
+
+// —— 将一行里所有“看起来像数字”的片段转成数值（包含 $2.799、12401、3u.71 等）——
+function parseNumericTokens(line) {
+  const tokens = [];
+  const re = /(?:\$?\s*[0-9OIlSsUu]+(?:\.[0-9OIlSsUu]+)?)/g;
+  let m;
+  while ((m = re.exec(line)) !== null) {
+    const raw = m[0];
+    const cleaned = fixNumericGlyphs(raw).replace(/[^0-9.]/g, '');
+    if (!cleaned) continue;
+    const val = parseFloat(cleaned);
+    if (Number.isFinite(val)) {
+      tokens.push({
+        raw,
+        cleaned,
+        val,
+        hasDot: cleaned.includes('.'),
+        idx: m.index
+      });
+    }
+  }
+  return tokens;
+}
+
+// —— Costco/Fuel 专用解析（优先使用），从“Pump Gallons Price …”区域抽取 —— 
 function parseFuelCostco(rawText) {
-  // 只保留可打印 ASCII，去掉奇异符号，保留换行
+  // 清理不可打印字符，保留换行
   const text = rawText.replace(/[^\x20-\x7E\n]/g, ' ');
   const dateISO = extractDateISO(text);
 
   const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  // 找到包含 Pump 的行以及后面两行作为候选
+
+  // 选候选行：包含 pump / gallon / price 的，以及下一两行
+  let cand = [];
   const idx = lines.findIndex(l => /pump/i.test(l));
-  const cand = [];
   if (idx >= 0) {
     cand.push(lines[idx]);
     if (lines[idx+1]) cand.push(lines[idx+1]);
     if (lines[idx+2]) cand.push(lines[idx+2]);
   }
-  // 也把包含 Gallons/Price 的行纳入候选
-  cand.push(...lines.filter(l => /gallons|price/i.test(l)));
+  cand.push(...lines.filter(l => /gallon|price/i.test(l)));
+
+  // 再找 Total Sale 行（用于可选核对）
+  const totalMatch = text.match(/total\s+sale\s*[: ]*\$?\s*([0-9OIlSsUu.]+)/i);
+  const totalOCR = totalMatch ? parseFloat(fixNumericGlyphs(totalMatch[1]).replace(/[^0-9.]/g,'')) : null;
 
   let gallons = null, price = null;
-  // 从候选行抽取数字，按“加仑大、单价小”的经验判断
+
   for (const ln of cand) {
-    const nums = (ln.replace(/[^0-9. ]/g, ' ').match(/[0-9]+(?:\.[0-9]+)?/g) || []).map(parseFloat);
-    if (!nums.length) continue;
-    const decimals = nums.filter(n => String(n).includes('.'));
-    // 可能出现 8(泵号)、12.401(加仑)、2.799(单价)
-    if (decimals.length >= 2) {
-      // 价格通常 1~10，加仑常在 3~30
-      const maybePrice = decimals.find(n => n >= 1 && n <= 10);
-      const maybeGall  = decimals.find(n => n > 5 && n <= 50);
-      // 备选：取最小作为价、最大作为加仑
-      price   = price   ?? maybePrice ?? Math.min(...decimals);
-      gallons = gallons ?? maybeGall  ?? Math.max(...decimals);
+    const lower = ln.toLowerCase();
+    const tokens = parseNumericTokens(ln);
+    if (!tokens.length) continue;
+
+    // 如果是以 “<泵号> ...” 开头，且第一个是 <=20 的整数，视为泵号，忽略它
+    if (/pump/.test(lower) && tokens.length >= 2) {
+      if (!tokens[0].hasDot && tokens[0].val <= 20) {
+        tokens.shift(); // 去掉泵号
+      }
+    }
+
+    // 优先从含 “price” 或 “$” 的 token 中取 price（1~10）
+    if (/price/.test(lower) || /\$/.test(ln)) {
+      const p = tokens
+        .filter(t => t.val >= 1 && t.val <= 10)
+        .sort((a,b) => a.val - b.val)[0];
+      if (p && price == null) price = p.val;
+    }
+
+    // gallons 候选：>2 且通常比单价大；若是 4~5 位整数(如 12401)按/1000 还原
+    const gCand = tokens
+      .map(t => {
+        if (!t.hasDot && t.val >= 1000 && t.val <= 99999 && /gallon|price|pump/i.test(ln))
+          return t.val / 1000; // 把 12401 还原为 12.401
+        return t.val;
+      })
+      .filter(v => v > 2);
+
+    if (gCand.length) {
+      // 取这一行里最大的作为 gallons（通常是 12.401 > 2.799）
+      const g = Math.max(...gCand);
+      if (gallons == null) gallons = g;
     }
   }
 
-  // 再尝试从 “Total Sale” 抓总价
-  const totalMatch = text.match(/total\s+sale\s*[: ]\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
-  const totalOCR   = totalMatch ? parseFloat(totalMatch[1]) : null;
-
-  // 合理性校验：若 price>10 且 gallons<5，可能互换了，调换过来
+  // 互检：若 price/gallons 互相不合理（price>10 且 gallons<5），交换一次
   if (price != null && gallons != null && price > 10 && gallons < 5) {
     const t = price; price = gallons; gallons = t;
   }
 
-  if (gallons != null && price != null) {
-    const priceTotal = totalOCR != null
-      ? +totalOCR.toFixed(2)
-      : +(gallons * price).toFixed(2);
+  // 有 price & gallons → 直接计算总价；否则尝试用 totalOCR 辅助
+  if (price != null && gallons != null) {
+    const priceTotal = +(gallons * price).toFixed(2);
     return {
       name: 'Fuel (Regular)',
       priceTotal,
@@ -98,8 +161,25 @@ function parseFuelCostco(rawText) {
       date: dateISO
     };
   }
+
+  if (price != null && totalOCR != null && totalOCR > 0) {
+    const g = +(totalOCR / price).toFixed(3);
+    if (g > 2 && g < 50) {
+      return {
+        name: 'Fuel (Regular)',
+        priceTotal: +totalOCR.toFixed(2),
+        qtyValue: g,
+        qtyUnit: 'gal',
+        unitPrice: `${(+price).toFixed(3)} $/gal`,
+        date: dateISO
+      };
+    }
+  }
+
+  // 仍然解析不到就返回 null（由上层走 LLM 兜底）
   return null;
 }
+
 
 export default async function handler(req, res) {
   // ——CORS——
