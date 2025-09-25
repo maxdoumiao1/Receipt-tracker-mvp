@@ -1,82 +1,87 @@
-// api/parse-receipt.js  —— 适配你当前前端 & 允许跨域
-
+// api/parse-receipt.js —— Node 运行时 + CORS + 手动读 body + 字段归一化
 import OpenAI from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// —— 小工具：规范数值/单位 & 计算单价 ——
-function toNumber(x) {
+// 读取原始 JSON body（非 Next 项目需要自己解析）
+function readJSON(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => {
+      try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); }
+    });
+    req.on('error', reject);
+  });
+}
+
+// 小工具：单位与单价
+const toNum = (x) => {
   const n = parseFloat(String(x ?? '').replace(/[^0-9.]/g, ''));
   return Number.isFinite(n) ? n : null;
-}
-function normUnit(u) {
+};
+const normUnit = (u) => {
   if (!u) return '';
-  u = String(u).toLowerCase().trim();
+  u = String(u).toLowerCase();
   if (/gall?on|^gal$/.test(u)) return 'gal';
   if (/^lb?s?$|pound/.test(u)) return 'lb';
-  if (/^kgs?$|kilogram/.test(u)) return 'kg';
-  if (/^oz$|ounce/.test(u)) return 'oz';
+  if (/^kgs?$/.test(u)) return 'kg';
+  if (/^oz$/.test(u)) return 'oz';
   if (/^l$|liter|litre/.test(u)) return 'l';
   if (/^ml$/.test(u)) return 'ml';
   if (/^ct$|count|pcs?$|pk$/.test(u)) return 'ct';
   return u;
-}
-function unitPrice(total, qty, unit) {
-  if (total == null || qty == null || !qty) return null;
-  return `${(total / qty).toFixed(4)} $/${unit || ''}`.trim();
-}
+};
+const calcUnitPrice = (total, qty, unit) =>
+  total != null && qty ? `${(total / qty).toFixed(4)} $/${unit || ''}`.trim() : null;
 
 export default async function handler(req, res) {
-  // —— CORS，允许从 GitHub Pages/其它域访问 ——
+  // —— CORS ——（从 GitHub Pages 或别的域调用也能过）
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY missing' });
   }
 
   try {
-    const { receiptText } = typeof req.body === 'object' ? req.body : {};
-    if (!receiptText) {
-      return res.status(400).json({ error: 'Missing receipt text' });
-    }
+    const body = typeof req.body === 'object' && req.body ? req.body : await readJSON(req);
+    const { receiptText } = body || {};
+    if (!receiptText) return res.status(400).json({ error: 'Missing receipt text' });
 
-    // —— 调 OpenAI，强制输出 { "items": [...] } 这个结构 ——
-    const completion = await openai.chat.completions.create({
-      // 你也可用 gpt-4o；这里用 mini 更省
-      model: 'gpt-4o-mini',
+    // —— 要求模型固定输出 { "items": [...] } 结构 —— 
+    const rsp = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',  // 你也可换 gpt-4o
       temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
         {
           role: 'system',
           content:
-            'Extract line items from the receipt text. Return ONLY a JSON object with an "items" array. Each item MUST have: name (string), priceTotal (number or null), qtyValue (number or null), qtyUnit (string or empty). No extra commentary.'
+            'Extract line items from the receipt. Return ONLY a JSON object: {"items":[{name, priceTotal, qtyValue, qtyUnit}]}. Numbers as numbers. No extra text.'
         },
         { role: 'user', content: receiptText }
       ]
     });
 
-    // —— 安全解析 & 兼容意外格式 ——
-    let raw = {};
-    try {
-      raw = JSON.parse(completion.choices[0].message.content || '{}');
-    } catch {
-      raw = { items: [] };
-    }
-    let items = Array.isArray(raw) ? raw : Array.isArray(raw.items) ? raw.items : [];
+    // —— 安全解析 & 兜底 —— 
+    let obj = {};
+    try { obj = JSON.parse(rsp.choices?.[0]?.message?.content || '{}'); } catch { obj = {}; }
+    let items = Array.isArray(obj) ? obj : Array.isArray(obj.items) ? obj.items : [];
 
-    // —— 字段名归一化，补齐 unitPrice/date，防止前端渲染出错 ——
+    // —— 字段归一化 + 单价 + 日期 —— 
     const today = new Date().toISOString().slice(0, 10);
     items = items.map((it) => {
       const name = (it.name || it.item || it.title || 'Item').toString().slice(0, 120);
-      const priceTotal = toNumber(it.priceTotal ?? it.total ?? it.amount ?? it.price);
-      const qtyValue = toNumber(it.qtyValue ?? it.quantity ?? it.qty);
+      const priceTotal = toNum(it.priceTotal ?? it.total ?? it.amount ?? it.price);
+      const qtyValue = toNum(it.qtyValue ?? it.quantity ?? it.qty);
       const qtyUnit  = normUnit(it.qtyUnit ?? it.unit);
-      const up = unitPrice(priceTotal, qtyValue, qtyUnit);
-      return { name, priceTotal, qtyValue, qtyUnit, unitPrice: up, date: today };
+      const unitPrice = calcUnitPrice(priceTotal, qtyValue, qtyUnit);
+      return { name, priceTotal, qtyValue, qtyUnit, unitPrice, date: today };
     });
 
     if (!items.length) {
@@ -84,8 +89,9 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({ items });
-  } catch (error) {
-    console.error('API Error:', error?.response?.data || error);
-    return res.status(500).json({ error: 'Failed to parse receipt.' });
+  } catch (err) {
+    console.error('OpenAI/Function Error:', err?.response?.data || err);
+    return res.status(500).json({ error: 'Failed to parse receipt', detail: err?.message || String(err) });
   }
 }
+
