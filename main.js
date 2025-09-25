@@ -53,36 +53,39 @@ input.addEventListener('change', async (e) => {
   progressEl.value = 0;
   statusEl.textContent = 'Loading OCR…';
 
-  // 使用英文收据：'eng'；中文小票可改 'chi_sim'（需要配置 langPath，后述）
-  const w = await ensureWorker('eng');
-
   try {
+    // 使用 Tesseract.js 进行 OCR 识别
+    const w = await ensureWorker('eng');
     const { data: { text } } = await w.recognize(file);
+
     progressEl.style.display = 'none';
     statusEl.textContent = 'OCR done.';
     ocrRawEl.textContent = text;
+    
+    statusEl.textContent = 'Sending to AI for parsing...';
 
-    const items = parseReceiptText(text);
-    renderParsed(items);
-    await saveItems(items);
-    await refreshSelectAndChart();
+    // 关键步骤：调用 Vercel 上的后端函数进行解析
+    const parsedItems = await parseReceiptTextWithAI(text);
+    
+    // 如果解析成功
+    if (parsedItems && parsedItems.length > 0) {
+      renderParsed(parsedItems);
+      await saveItems(parsedItems);
+      await refreshSelectAndChart();
+      statusEl.textContent = 'Parsing complete.';
+    } else {
+      statusEl.textContent = 'No items found. Please try another receipt.';
+    }
+
   } catch (err) {
     console.error(err);
-    statusEl.textContent = 'OCR failed.';
+    statusEl.textContent = 'OCR or Parsing failed.';
     progressEl.style.display = 'none';
   }
 });
 
-// --- 行解析（MVP 规则：够用就好） ---
-// --- 行解析（优化版） ---
-// --- 行解析（增强版） ---
-// main.js
-
-// ... （所有其他代码保持不变） ...
-
-// --- 替换旧的解析函数 ---
-async function parseReceiptText(text) {
-  // 这里的 URL 就是你刚刚在 Vercel 上部署的函数地址
+// --- 新的解析函数，调用 Vercel 后端 ---
+async function parseReceiptTextWithAI(text) {
   const serverlessUrl = 'https://project-6nho1.vercel.app/api/parse-receipt'; 
 
   try {
@@ -99,14 +102,12 @@ async function parseReceiptText(text) {
     }
 
     const data = await response.json();
-    return data.items; // 返回 GPT 解析后的结构化数据
+    return data.items;
   } catch (error) {
     console.error('Error parsing with AI:', error);
     return [];
   }
 }
-
-// ... （所有其他代码保持不变） ...
 
 // 规格统一 & 单位价（权衡：简化实现，够用即可）
 function computeUnitPrice(total, qty, unit) {
