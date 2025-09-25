@@ -38,37 +38,82 @@ async function ensureWorker(lang = 'eng') {
         progressEl.style.display = 'block';
         progressEl.value = m.progress;
       }
-      statusEl.textContent = `${m.status} ${(m.progress*100|0)}%`;
+      statusEl.textContent = `${m.status} ${(m.progress * 100 | 0)}%`;
     }
   });
   await worker.loadLanguage(lang);
   await worker.initialize(lang);
+  // ★ OCR 参数优化：统一文本块 + 字符白名单，减少脏字符 ★
+  await worker.setParameters({
+    tessedit_pageseg_mode: '6', // 单块文本
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.$:/#-() "
+    // tessedit_char_blacklist: "§£€¥•●◆○◇△▶◀[]{}" // 可选
+  });
   return worker;
 }
 
-// --- 监听上传 ---
+// --- 轻量图像预处理：灰度 + 二值化 + 放大（关键新增） ---
+async function preprocessForOCR(fileOrDataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const scale = 2; // 放大 2 倍，必要时可调 1.5~3
+      const w = img.width * scale;
+      const h = img.height * scale;
+
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+
+      // 先把原图绘制上去
+      ctx.drawImage(img, 0, 0, w, h);
+
+      // 灰度 + 简单阈值（二值化）
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const gray = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+        // 阈值可调 160~210，越高背景越白
+        const v = gray > 190 ? 255 : 0;
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      // 输出 dataURL 给 tesseract 识别
+      resolve(c.toDataURL('image/png'));
+    };
+
+    img.src = (typeof fileOrDataUrl === 'string')
+      ? fileOrDataUrl
+      : URL.createObjectURL(fileOrDataUrl);
+  });
+}
+
 // --- 监听上传 ---
 input.addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
+
   progressEl.value = 0;
+  progressEl.style.display = 'block';
   statusEl.textContent = 'Loading OCR…';
 
   try {
-    // 使用 Tesseract.js 进行 OCR 识别
+    // ★ 先做预处理，再 OCR（核心改动） ★
+    const pre = await preprocessForOCR(file);
     const w = await ensureWorker('eng');
-    const { data: { text } } = await w.recognize(file);
+    const { data: { text } } = await w.recognize(pre);
 
     progressEl.style.display = 'none';
     statusEl.textContent = 'OCR done.';
     ocrRawEl.textContent = text;
-    
+
     statusEl.textContent = 'Sending to AI for parsing...';
 
-    // 关键步骤：调用 Vercel 上的后端函数进行解析
+    // 调用 Vercel 后端解析
     const parsedItems = await parseReceiptTextWithAI(text);
-    
-    // 如果解析成功
+
     if (parsedItems && parsedItems.length > 0) {
       renderParsed(parsedItems);
       await saveItems(parsedItems);
@@ -77,30 +122,28 @@ input.addEventListener('change', async (e) => {
     } else {
       statusEl.textContent = 'No items found. Please try another receipt.';
     }
-
   } catch (err) {
     console.error(err);
     statusEl.textContent = 'OCR or Parsing failed.';
     progressEl.style.display = 'none';
   }
 });
-// --- 新的解析函数，调用 Vercel 后端 ---
+
+// --- 调 Vercel 后端 ---
 async function parseReceiptTextWithAI(text) {
   // 若前端也部署在 Vercel 同一域名，走同域；否则回退到你的生产 API 域名
-  const API_BASE =
-    location.host.endsWith('vercel.app') ? location.origin : 'https://project-6nho1.vercel.app';
+  const API_BASE = location.host.endsWith('vercel.app')
+    ? location.origin
+    : 'https://project-6nho1.vercel.app';
   const serverlessUrl = `${API_BASE}/api/parse-receipt`;
 
   try {
     const response = await fetch(serverlessUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // 若你将来加 token，这里加 Authorization
       body: JSON.stringify({ receiptText: text }),
-      // 注：跨域时不带 cookie，保持默认
     });
 
-    // 显示服务端错误详情（便于你在 Network 面板看到）
     if (!response.ok) {
       const msg = await response.text().catch(() => '');
       throw new Error(`API ${response.status} ${response.statusText} :: ${msg}`);
@@ -118,11 +161,9 @@ async function parseReceiptTextWithAI(text) {
   }
 }
 
-
 // 规格统一 & 单位价（权衡：简化实现，够用即可）
 function computeUnitPrice(total, qty, unit) {
   if (!qty || !unit) return null;
-  // 把重量统一到 oz，体积统一到 L，数量用 ct/pk
   const u = unit.toLowerCase();
   let baseQty = qty, baseUnit = u;
 
@@ -130,8 +171,6 @@ function computeUnitPrice(total, qty, unit) {
   else if (u === 'kg') { baseQty = qty * 1000; baseUnit = 'g'; }
   else if (u === 'ml') { baseQty = qty / 1000; baseUnit = 'l'; }
   else if (u === 'gal') { baseQty = qty * 3.785; baseUnit = 'l'; }
-  // ct/pk 直接按件数
-  // oz/g/l/ct/pk 原样
 
   if (!baseQty || baseQty <= 0) return null;
   const price = +(total / baseQty).toFixed(4);
@@ -139,10 +178,8 @@ function computeUnitPrice(total, qty, unit) {
 }
 
 function normalizeName(s) {
-  // 去除常见的单位和标识符，如 ea, pk, ct
   return s
     .replace(/\b(?:ea|pk|ct)\b/ig, '')
-    // 移除不必要的符号和多余空格
     .replace(/[^\w\s\d.-]/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -155,11 +192,11 @@ function renderParsed(items) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${it.name}</td>
-      <td>${it.priceTotal?.toFixed(2) ?? ''}</td>
+      <td>${it.priceTotal?.toFixed?.(2) ?? (typeof it.priceTotal === 'number' ? it.priceTotal.toFixed(2) : '')}</td>
       <td>${it.qtyValue ?? ''}</td>
       <td>${it.qtyUnit ?? ''}</td>
       <td>${it.unitPrice ?? ''}</td>
-      <td>${it.date}</td>
+      <td>${it.date ?? ''}</td>
     `;
     tableBody.appendChild(tr);
   }
@@ -180,7 +217,6 @@ function saveItems(items) {
 // --- 读库 → 下拉框 & 图表 ---
 async function refreshSelectAndChart() {
   const all = await idbGetAll(STORE);
-  // 下拉：按名称去重
   const names = [...new Set(all.map(i => i.name))].sort();
   itemSelect.innerHTML = names.map(n => `<option value="${encodeURIComponent(n)}">${n}</option>`).join('');
   itemSelect.onchange = () => renderChartFor(decodeURIComponent(itemSelect.value));
@@ -207,12 +243,10 @@ async function renderChartFor(name) {
   const rows = all.filter(r => r.name === name);
   if (!rows.length) return;
 
-  // 用 unitPrice 优先；否则退化到 total price
-  // 解析 "$/unit" 里的数值部分
   const pts = rows.map(r => {
     const up = r.unitPrice ? parseFloat(r.unitPrice) : null;
     return { date: r.date, y: up ?? r.priceTotal };
-  }).sort((a,b) => a.date.localeCompare(b.date));
+  }).sort((a, b) => a.date.localeCompare(b.date));
 
   const labels = pts.map(p => p.date);
   const data = pts.map(p => p.y);
@@ -223,7 +257,7 @@ async function renderChartFor(name) {
     type: 'line',
     data: {
       labels,
-      datasets: [{ label: `${name} (unit or total)`, data, fill:false, tension:0.25 }]
+      datasets: [{ label: `${name} (unit or total)`, data, fill: false, tension: 0.25 }]
     },
     options: {
       responsive: true,
