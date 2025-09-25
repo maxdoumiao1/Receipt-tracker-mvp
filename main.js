@@ -83,7 +83,7 @@ input.addEventListener('change', async (e) => {
 // --- 替换旧的解析函数 ---
 async function parseReceiptText(text) {
   // 这里的 URL 就是你刚刚在 Vercel 上部署的函数地址
-  const serverlessUrl = 'YOUR_VERCEL_PROJECT_URL/api/parse-receipt'; 
+  const serverlessUrl = 'https://project-6nho1.vercel.app/api/parse-receipt'; 
 
   try {
     const response = await fetch(serverlessUrl, {
