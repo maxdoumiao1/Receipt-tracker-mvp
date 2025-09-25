@@ -32,15 +32,6 @@ const normUnit = (u) => {
 const calcUnitPrice = (total, qty, unit) =>
   total != null && qty ? `${(total / qty).toFixed(4)} $/${unit || ''}`.trim() : null;
 
-// ——从 OCR 文本中提日期（优先 “Date: 09/10/25”）——
-function extractDateISO(text) {
-  const m = text.match(/date[:\s]*([0-9]{2})[\/\-]([0-9]{2})[\/\-]([0-9]{2,4})/i)
-        || text.match(/\b([0-9]{2})[\/\-]([0-9]{2})[\/\-]([0-9]{2,4})\b/);
-  if (!m) return new Date().toISOString().slice(0,10);
-  const mm = m[1], dd = m[2], yy = m[3].length === 2 ? ('20' + m[3]) : m[3];
-  return `${yy}-${mm}-${dd}`;
-}
-
 // ——成本科油票专用解析（高优先）——
 // —— 从 OCR 文本中提日期（优先 “Date: 09/10/25”）——
 function extractDateISO(text) {
