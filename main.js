@@ -86,28 +86,38 @@ input.addEventListener('change', async (e) => {
 });
 // --- 新的解析函数，调用 Vercel 后端 ---
 async function parseReceiptTextWithAI(text) {
-  const serverlessUrl = 'https://project-6nho1.vercel.app/api/parse-receipt'; 
+  // 若前端也部署在 Vercel 同一域名，走同域；否则回退到你的生产 API 域名
+  const API_BASE =
+    location.host.endsWith('vercel.app') ? location.origin : 'https://project-6nho1.vercel.app';
+  const serverlessUrl = `${API_BASE}/api/parse-receipt`;
 
   try {
     const response = await fetch(serverlessUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // 若你将来加 token，这里加 Authorization
       body: JSON.stringify({ receiptText: text }),
+      // 注：跨域时不带 cookie，保持默认
     });
 
+    // 显示服务端错误详情（便于你在 Network 面板看到）
     if (!response.ok) {
-      throw new Error(`Serverless function failed with status: ${response.status}`);
+      const msg = await response.text().catch(() => '');
+      throw new Error(`API ${response.status} ${response.statusText} :: ${msg}`);
     }
 
     const data = await response.json();
+    if (!data || !Array.isArray(data.items)) {
+      throw new Error('API 返回格式不对，缺少 items 数组');
+    }
     return data.items;
   } catch (error) {
     console.error('Error parsing with AI:', error);
+    statusEl.textContent = `Server error: ${error.message}`;
     return [];
   }
 }
+
 
 // 规格统一 & 单位价（权衡：简化实现，够用即可）
 function computeUnitPrice(total, qty, unit) {
