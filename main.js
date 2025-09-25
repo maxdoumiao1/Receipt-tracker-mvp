@@ -47,6 +47,7 @@ async function ensureWorker(lang = 'eng') {
 }
 
 // --- 监听上传 ---
+// --- 监听上传 ---
 input.addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -83,7 +84,6 @@ input.addEventListener('change', async (e) => {
     progressEl.style.display = 'none';
   }
 });
-
 // --- 新的解析函数，调用 Vercel 后端 ---
 async function parseReceiptTextWithAI(text) {
   const serverlessUrl = 'https://project-6nho1.vercel.app/api/parse-receipt'; 
